@@ -27,6 +27,7 @@
 //! a fish wrap.
 
 use super::permissions::{DenyRules, Host, PermissionVerdict};
+use crate::core::cmdline::lexer::{contains_unattestable_construct, join_continuations};
 use crate::core::user_env;
 use crate::discover::registry::rewrite_command;
 
@@ -286,7 +287,11 @@ fn decide_with_attestation(
         );
     }
 
-    if crate::core::cmdline::lexer::contains_unattestable_construct(cmd) {
+    // Read as the gate reads it, continuations joined: bash makes `$\⏎(`
+    // a substitution, and the rewrite emits it as one.
+    let unattestable =
+        join_continuations(cmd).is_none_or(|line| contains_unattestable_construct(&line));
+    if unattestable {
         return HookDecision::Defer;
     }
 
@@ -694,6 +699,25 @@ mod tests {
             ),
             HookDecision::AskRewrite(_, AskOwner::Host)
         ));
+    }
+
+    /// A substitution bash makes by joining a continuation is one: the
+    /// command defers as `ls "$(rm Y)"` does.
+    #[test]
+    fn a_substitution_split_by_a_continuation_defers() {
+        for cmd in ["ls \"$(rm Y)\"", "ls \"$\\\n(rm Y)\"", "ls #c\\\nrm Y"] {
+            assert_eq!(
+                decide_with_params(
+                    cmd,
+                    PermissionVerdict::Default,
+                    &[],
+                    &[],
+                    DenyRules::NoneConfigured
+                ),
+                HookDecision::Defer,
+                "{cmd:?}"
+            );
+        }
     }
 
     #[test]
